@@ -104,6 +104,7 @@ import {
     MLDSASecurityLevel,
     QuantumBIP32Factory,
     RawChallenge,
+    FundingTransaction,
     UTXO as TransactionUTXO,
     Wallet
 } from '@btc-vision/transaction';
@@ -1245,7 +1246,7 @@ export class WalletController {
     };
 
     /**
-     * Build and sign a BTC transfer transaction using TransactionFactory.
+     * Build and sign a BTC transfer transaction using FundingTransaction directly.
      * Uses the correct TweakedSigner for P2TR (bypasses wallet-sdk tweak bug in HdKeyring).
      * Called by the sendBitcoin provider API flow.
      * @throws WalletControllerError
@@ -1292,17 +1293,20 @@ export class WalletController {
             from: account.address
         };
 
-        const signedTx = await Web3API.transactionFactory.createBTCTransfer(fundingParams);
+        const funding = new FundingTransaction(fundingParams);
+        const signedTx = await funding.signTransaction();
+        if (!signedTx) {
+            throw new WalletControllerError('Could not sign funding transaction');
+        }
 
         // Parse the signed tx to extract outputs
-        const tx = Transaction.fromBuffer(fromHex(signedTx.tx));
-        const outputs = tx.outs.map((o) => ({
+        const outputs = signedTx.outs.map((o) => ({
             address: scriptPubKeyToAddress(o.script, psbtNetwork) || 'unknown',
             value: Number(o.value)
         }));
 
         // Build inputs from the parsed tx, matched against our UTXOs
-        const inputs = tx.ins.map((inp) => {
+        const inputs = signedTx.ins.map((inp) => {
             const txid = toHex(reverseCopy(inp.hash));
             const matchedUtxo = utxos.find(
                 (u) => u.transactionId === txid && u.outputIndex === inp.index
@@ -1315,11 +1319,12 @@ export class WalletController {
             };
         });
 
-        const fee = Number(signedTx.estimatedFees);
-        const txBytes = signedTx.tx.length / 2;
+        const rawTxHex = signedTx.toHex();
+        const fee = Number(funding.estimatedFees);
+        const txBytes = rawTxHex.length / 2;
 
         return {
-            rawTx: signedTx.tx,
+            rawTx: rawTxHex,
             inputs,
             outputs,
             fee,
