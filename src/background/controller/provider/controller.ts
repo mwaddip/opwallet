@@ -288,11 +288,19 @@ export class ProviderController {
             //const { data: { params: { toAddress, satoshis } } } = req;
         }
     ])
-    sendBitcoin = async ({ approvalRes: { psbtHex } }: { approvalRes: { psbtHex: string } }) => {
-        const psbt = Psbt.fromHex(psbtHex);
+    sendBitcoin = async ({
+        approvalRes
+    }: {
+        approvalRes: { psbtHex?: string; rawtx?: string };
+    }) => {
+        // If we have a raw signed tx (from TransactionFactory path), broadcast directly
+        if (approvalRes.rawtx) {
+            return await wallet.pushTx(approvalRes.rawtx);
+        }
+        // Fallback: extract from PSBT
+        const psbt = Psbt.fromHex(approvalRes.psbtHex!);
         const tx = psbt.extractTransaction();
-        const rawtx = tx.toHex();
-        return await wallet.pushTx(rawtx);
+        return await wallet.pushTx(tx.toHex());
     };
 
     @Reflect.metadata('APPROVAL', [

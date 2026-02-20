@@ -1,5 +1,5 @@
 import { Tooltip } from 'antd';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { KEYRING_TYPE } from '@/shared/constant';
 import { DecodedPsbt, ParsedSignPsbtUr, RawTxInfo, ToSignInput, TxType } from '@/shared/types';
@@ -304,8 +304,53 @@ export default function SignPsbt({
     }, [wallet]);
 
     const [isKeystoneSigning, setIsKeystoneSigning] = useState(false);
+    const rawTxHexRef = useRef<string>('');
+
     const init = async () => {
         let txError = '';
+
+        // --- SEND_BITCOIN: build & sign using TransactionFactory (correct P2TR tweak) ---
+        if (type === TxType.SEND_BITCOIN && sendBitcoinParams) {
+            try {
+                const result = await wallet.buildBtcTransferTx({
+                    toAddress: sendBitcoinParams.toAddress,
+                    satoshis: sendBitcoinParams.satoshis,
+                    feeRate: sendBitcoinParams.feeRate || 10
+                });
+
+                rawTxHexRef.current = result.rawTx;
+
+                setTxInfo({
+                    decodedPsbt: {
+                        inputs: result.inputs,
+                        outputs: result.outputs,
+                        risks: [],
+                        fee: result.fee,
+                        feeRate: result.feeRate,
+                        rbfEnabled: false,
+                        transactionSize: result.size,
+                        shouldWarnFeeRate: false,
+                        recommendedFeeRate: result.feeRate
+                    },
+                    changedBalance: 0,
+                    psbtHex: result.rawTx,
+                    rawtx: result.rawTx,
+                    toSignInputs: result.inputs.map((_, idx) => ({
+                        index: idx,
+                        publicKey: currentAccount.pubkey
+                    })),
+                    txError: ''
+                });
+            } catch (e) {
+                txError = (e as Error).message;
+                tools.toastError(txError);
+                setTxInfo(Object.assign({}, initTxInfo, { txError }));
+            }
+            setLoading(false);
+            return;
+        }
+
+        // --- SIGN_TX: existing PSBT flow ---
         if (type === TxType.SIGN_TX) {
             if (psbtHex && currentAccount.type === KEYRING_TYPE.KeystoneKeyring) {
                 try {
@@ -334,19 +379,11 @@ export default function SignPsbt({
         const decodedPsbt = await wallet.decodePsbt(psbtHex);
 
         let toSignInputs: ToSignInput[] = [];
-        // @ts-expect-error
-        if (type === TxType.SEND_BITCOIN) {
-            toSignInputs = decodedPsbt.inputs.map((_, index) => ({
-                index,
-                publicKey: currentAccount.pubkey
-            }));
-        } else {
-            try {
-                toSignInputs = await wallet.formatOptionsToSignInputs(psbtHex, options);
-            } catch (e) {
-                txError = (e as Error).message;
-                tools.toastError(txError);
-            }
+        try {
+            toSignInputs = await wallet.formatOptionsToSignInputs(psbtHex, options);
+        } catch (e) {
+            txError = (e as Error).message;
+            tools.toastError(txError);
         }
 
         setTxInfo({
@@ -379,7 +416,8 @@ export default function SignPsbt({
             }
             resolveApproval({
                 psbtHex: (res ?? txInfo).psbtHex,
-                signed
+                signed,
+                rawtx: type === TxType.SEND_BITCOIN ? rawTxHexRef.current : undefined
             });
         };
     }

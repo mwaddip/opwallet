@@ -1245,6 +1245,90 @@ export class WalletController {
     };
 
     /**
+     * Build and sign a BTC transfer transaction using TransactionFactory.
+     * Uses the correct TweakedSigner for P2TR (bypasses wallet-sdk tweak bug in HdKeyring).
+     * Called by the sendBitcoin provider API flow.
+     * @throws WalletControllerError
+     */
+    public buildBtcTransferTx = async (params: {
+        toAddress: string;
+        satoshis: number;
+        feeRate: number;
+    }): Promise<{
+        rawTx: string;
+        inputs: { txid: string; vout: number; address: string; value: number }[];
+        outputs: { address: string; value: number }[];
+        fee: number;
+        feeRate: number;
+        size: number;
+    }> => {
+        const account = await this.getCurrentAccount();
+        if (!account) throw new WalletControllerError('No current account: buildBtcTransferTx');
+
+        const walletSigner = await this.getWalletSigner();
+        const amount = BigInt(params.satoshis);
+        const networkType = this.getNetworkType();
+        const psbtNetwork = toNetwork(networkTypeToOPNet(networkType));
+
+        // Fetch UTXOs with buffer for fees
+        const utxos = await Web3API.getAllUTXOsForAddresses(
+            [account.address],
+            amount + 10000n
+        );
+        if (!utxos || utxos.length === 0) {
+            throw new WalletControllerError('No UTXOs available for funding transaction');
+        }
+
+        const fundingParams: IFundingTransactionParameters = {
+            amount,
+            utxos,
+            signer: walletSigner.keypair,
+            mldsaSigner: walletSigner.mldsaKeypair,
+            network: Web3API.network,
+            feeRate: params.feeRate,
+            priorityFee: 0n,
+            gasSatFee: 0n,
+            to: params.toAddress,
+            from: account.address
+        };
+
+        const signedTx = await Web3API.transactionFactory.createBTCTransfer(fundingParams);
+
+        // Parse the signed tx to extract outputs
+        const tx = Transaction.fromBuffer(fromHex(signedTx.tx));
+        const outputs = tx.outs.map((o) => ({
+            address: scriptPubKeyToAddress(o.script, psbtNetwork) || 'unknown',
+            value: Number(o.value)
+        }));
+
+        // Build inputs from the parsed tx, matched against our UTXOs
+        const inputs = tx.ins.map((inp) => {
+            const txid = toHex(reverseCopy(inp.hash));
+            const matchedUtxo = utxos.find(
+                (u) => u.transactionId === txid && u.outputIndex === inp.index
+            );
+            return {
+                txid,
+                vout: inp.index,
+                address: account.address,
+                value: matchedUtxo ? Number(matchedUtxo.value) : 0
+            };
+        });
+
+        const fee = Number(signedTx.estimatedFees);
+        const txBytes = signedTx.tx.length / 2;
+
+        return {
+            rawTx: signedTx.tx,
+            inputs,
+            outputs,
+            fee,
+            feeRate: txBytes > 0 ? Math.ceil(fee / txBytes) : params.feeRate,
+            size: txBytes
+        };
+    };
+
+    /**
      * ECDSA message signing for the current account.
      * The message is SHA256 hashed before signing.
      * @throws WalletControllerError

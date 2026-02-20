@@ -103,6 +103,7 @@ export type SwitchChainApprovalResponse = BaseApprovalResponse | undefined;
 export interface SignPsbtApprovalResponse extends BaseApprovalResponse {
     psbtHex: string;
     signed: boolean;
+    rawtx?: string;
 }
 
 export type SignInteractionApprovalResponse = BaseApprovalResponse | undefined;
